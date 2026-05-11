@@ -5,6 +5,7 @@ from typing import Optional
 
 import structlog
 
+from app.ai.duplex_base import AiEventType
 from app.bridge.audio_adapter import AudioAdapter
 from app.utils.constants import AudioConstants
 
@@ -67,6 +68,12 @@ class CallSession:
                             name="session-ai-recv"
                         )
 
+                        self._logger.info("📋 Starting AI event task...")
+                        tg.create_task(
+                            self._ai_events_safe(),
+                            name="session-ai-events"
+                        )
+
                         self._logger.info("📋 Starting health task...")
                         tg.create_task(
                             self._health_safe(),
@@ -111,7 +118,7 @@ class CallSession:
 
     async def stop(self) -> None:
         """Stop the call session."""
-        if not self._running:
+        if not self._running and not self._task_group_task:
             return
 
         self._logger.info("Stopping call session...")
@@ -127,6 +134,8 @@ class CallSession:
                 self._logger.info("TaskGroup task cancelled")
             except Exception as e:
                 self._logger.error(f"Error during TaskGroup cancellation: {e}")
+            finally:
+                self._task_group_task = None
 
         # Disconnect AI
         try:
@@ -205,6 +214,39 @@ class CallSession:
             self._logger.error(f"AI receive fatal error: {e}", exc_info=True)
         finally:
             self._logger.info(f"🛑 AI receive task STOPPED (received {chunks_received} chunks)")
+
+    async def _ai_events_safe(self) -> None:
+        """Consume AI events and translate barge-in into local playback cleanup."""
+        events_seen = 0
+        self._logger.info("📡 AI event task STARTED")
+        try:
+            async for event in self._ai.events():
+                if not self._running:
+                    break
+
+                events_seen += 1
+
+                if event.type == AiEventType.INTERRUPTION:
+                    cleared_frames = await self._media.clear_downlink_audio()
+                    self._logger.info(
+                        "Caller barge-in detected; cleared pending playback",
+                        cleared_frames=cleared_frames,
+                        event=event.data,
+                    )
+                elif event.type == AiEventType.ERROR:
+                    self._logger.warning("AI event error", error=event.error, data=event.data)
+                elif event.type == AiEventType.DISCONNECTED:
+                    self._logger.warning("AI disconnected event received, stopping session", data=event.data)
+                    asyncio.create_task(self.stop())
+                    break
+
+        except asyncio.CancelledError:
+            self._logger.info(f"AI event task cancelled after {events_seen} events")
+            raise
+        except Exception as e:
+            self._logger.error(f"AI event task fatal error: {e}", exc_info=True)
+        finally:
+            self._logger.info(f"🛑 AI event task STOPPED (processed {events_seen} events)")
 
     async def _health_safe(self) -> None:
         """Safe health monitoring with proper exception handling."""

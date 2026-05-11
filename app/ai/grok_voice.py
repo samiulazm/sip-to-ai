@@ -76,6 +76,7 @@ class GrokVoiceClient(AiDuplexBase):
         self._session_created_event = asyncio.Event()
         self._session_updated_event = asyncio.Event()
         self._message_handler_task: Optional[asyncio.Task[None]] = None
+        self._response_active = False
 
         self._audio_frames_sent = 0
         self._audio_chunks_received = 0
@@ -133,16 +134,34 @@ class GrokVoiceClient(AiDuplexBase):
             self._logger.debug("Grok ping")
 
         elif msg_type == "session.updated":
+            session_data = data.get("session", {})
+            transcription = session_data.get("input_audio_transcription")
+            self._logger.info("Grok session updated", input_audio_transcription=transcription)
             self._session_updated_event.set()
             await self._event_queue.put(
                 AiEvent(
                     type=AiEventType.SESSION_UPDATED,
-                    data=data.get("session", {}),
+                    data=session_data,
                     timestamp=time.time(),
                 )
             )
 
         elif msg_type == "input_audio_buffer.speech_started":
+            cleared_chunks = self._clear_output_audio_queue()
+            if self._response_active:
+                await self._cancel_response()
+                self._response_active = False
+
+            await self._event_queue.put(
+                AiEvent(
+                    type=AiEventType.INTERRUPTION,
+                    data={
+                        "event": "speech_started",
+                        "cleared_audio_chunks": cleared_chunks,
+                    },
+                    timestamp=time.time(),
+                )
+            )
             await self._event_queue.put(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
@@ -189,8 +208,20 @@ class GrokVoiceClient(AiDuplexBase):
         elif msg_type in ("response.output_audio_transcript.delta", "response.output_audio_transcript.done"):
             self._logger.info("🤖 AI transcript", **{k: data.get(k) for k in ("delta", "transcript") if k in data})
 
+        elif msg_type == "response.created":
+            self._response_active = True
+            self._logger.debug("Grok response.created")
+
         elif msg_type == "response.done":
+            self._response_active = False
             self._logger.debug("Grok response.done")
+
+        elif msg_type == "response.function_call_arguments.done":
+            self._logger.warning(
+                "Grok requested a function tool but no tool handler is configured",
+                name=data.get("name"),
+                call_id=data.get("call_id"),
+            )
 
         elif msg_type == "error":
             err = data.get("error", {})
@@ -228,6 +259,7 @@ class GrokVoiceClient(AiDuplexBase):
                     "input": {"format": {"type": "audio/pcmu", "rate": 8000}},
                     "output": {"format": {"type": "audio/pcmu", "rate": 8000}},
                 },
+                "input_audio_transcription": {"model": "grok-2-audio"},
                 "turn_detection": {"type": "server_vad"},
             },
         }
@@ -263,6 +295,30 @@ class GrokVoiceClient(AiDuplexBase):
         }
         await self._ws.send(json.dumps(message))
         self._logger.info("Greeting request sent", greeting_preview=self._greeting[:50])
+
+    def _clear_output_audio_queue(self) -> int:
+        """Discard queued Grok audio chunks that have not reached RTP yet."""
+        cleared = 0
+        while True:
+            try:
+                self._audio_queue.get_nowait()
+                cleared += 1
+            except asyncio.QueueEmpty:
+                break
+
+        if cleared:
+            self._logger.info("Cleared queued Grok output audio", chunks=cleared)
+        return cleared
+
+    async def _cancel_response(self) -> None:
+        """Ask Grok to stop the active response after caller barge-in."""
+        if not self._connected or not self._ws:
+            return
+        try:
+            await self._ws.send(json.dumps({"type": "response.cancel"}))
+            self._logger.info("Sent response.cancel to Grok after barge-in")
+        except Exception as e:
+            self._logger.warning("Failed to cancel Grok response", error=str(e))
 
     async def connect(self) -> None:
         """Connect to Grok Voice WebSocket and complete the handshake."""
@@ -311,13 +367,22 @@ class GrokVoiceClient(AiDuplexBase):
 
     async def close(self) -> None:
         """Close the Grok WebSocket and cancel background tasks."""
-        if not self._connected:
+        if not self._connected and not self._ws and not self._message_handler_task:
             return
 
         self._connected = False
+        self._response_active = False
         self._stop_event.set()
+        self._clear_output_audio_queue()
         try:
             self._audio_queue.put_nowait(b"")
+        except asyncio.QueueFull:
+            pass
+        # Push sentinel to unblock any events() consumer
+        try:
+            self._event_queue.put_nowait(
+                AiEvent(type=AiEventType.DISCONNECTED, timestamp=time.time())
+            )
         except asyncio.QueueFull:
             pass
 
@@ -327,9 +392,24 @@ class GrokVoiceClient(AiDuplexBase):
                 await self._message_handler_task
             except asyncio.CancelledError:
                 self._logger.debug("Message handler cancelled")
+            finally:
+                self._message_handler_task = None
 
         if self._ws:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            finally:
+                self._ws = None
+
+        # Drain any remaining items to prevent stale data on reconnect
+        self._clear_output_audio_queue()
+        while not self._event_queue.empty():
+            try:
+                self._event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
         self._logger.info("Grok Voice disconnected")
 
@@ -366,7 +446,7 @@ class GrokVoiceClient(AiDuplexBase):
         while self._connected:
             try:
                 chunk = await self._audio_queue.get()
-                if not self._connected and chunk == b"":
+                if chunk == b"":
                     break
                 yield chunk
             except Exception as e:
@@ -379,6 +459,8 @@ class GrokVoiceClient(AiDuplexBase):
             try:
                 event = await self._event_queue.get()
                 yield event
+                if not self._connected and event.type == AiEventType.DISCONNECTED:
+                    break
             except Exception as e:
                 self._logger.error("Grok event stream error", error=str(e))
                 break

@@ -53,10 +53,18 @@ class MockDuplexClient(AiDuplexBase):
         self._connected = False
         self._logger.info("Mock AI client closed")
 
-        await self._event_queue.put(AiEvent(
-            type=AiEventType.DISCONNECTED,
-            data={"status": "disconnected"}
-        ))
+        # Push sentinels to unblock iterators
+        try:
+            self._audio_queue.put_nowait(b"")
+        except asyncio.QueueFull:
+            pass
+        try:
+            self._event_queue.put_nowait(AiEvent(
+                type=AiEventType.DISCONNECTED,
+                data={"status": "disconnected"}
+            ))
+        except asyncio.QueueFull:
+            pass
 
     async def send_pcm16_8k(self, frame_20ms: bytes) -> None:
         """Send audio to mock AI (echo back after delay).
@@ -80,6 +88,8 @@ class MockDuplexClient(AiDuplexBase):
         while self._connected:
             try:
                 chunk = await self._audio_queue.get()
+                if chunk == b"":
+                    break
                 yield chunk
             except Exception as e:
                 self._logger.error("Audio stream error", error=str(e))
@@ -95,6 +105,8 @@ class MockDuplexClient(AiDuplexBase):
             try:
                 event = await self._event_queue.get()
                 yield event
+                if not self._connected and event.type == AiEventType.DISCONNECTED:
+                    break
             except Exception as e:
                 self._logger.error("Event stream error", error=str(e))
                 break

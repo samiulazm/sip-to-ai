@@ -218,7 +218,19 @@ class TestGrokMessageProcessing:
         from app.ai.duplex_base import AiEventType
 
         client = GrokVoiceClient(api_key="k")
+        ws = _FakeWebSocket()
+        client._ws = ws  # type: ignore[assignment]
+        client._connected = True
+        client._response_active = True
+        await client._audio_queue.put(b"\x01" * 320)
+
         await client._process_message({"type": "input_audio_buffer.speech_started"})
+
+        evt = client._event_queue.get_nowait()
+        assert evt.type == AiEventType.INTERRUPTION
+        assert evt.data == {"event": "speech_started", "cleared_audio_chunks": 1}
+        assert json.loads(ws.sent[0])["type"] == "response.cancel"
+        assert client._audio_queue.empty()
 
         evt = client._event_queue.get_nowait()
         assert evt.type == AiEventType.TRANSCRIPT_PARTIAL
@@ -299,6 +311,7 @@ class TestGrokSessionConfig:
         assert sess["audio"]["input"]["format"]["rate"] == 8000
         assert sess["audio"]["output"]["format"]["type"] == "audio/pcmu"
         assert sess["audio"]["output"]["format"]["rate"] == 8000
+        assert sess["input_audio_transcription"] == {"model": "grok-2-audio"}
         assert sess["turn_detection"]["type"] == "server_vad"
 
     @pytest.mark.asyncio

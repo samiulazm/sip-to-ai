@@ -184,6 +184,20 @@ class TestStreamBuffer:
         await buffer.close()
 
     @pytest.mark.asyncio
+    async def test_clear_stream_buffer(self) -> None:
+        """Test clearing stream buffer without closing it."""
+        buffer = StreamBuffer(capacity=3)
+        await buffer.send(b"one")
+        await buffer.send(b"two")
+
+        assert buffer.clear() == 2
+
+        with pytest.raises(asyncio.QueueEmpty):
+            buffer.receive_nowait()
+
+        await buffer.close()
+
+    @pytest.mark.asyncio
     async def test_producer_consumer(self, stream_buffer: StreamBuffer) -> None:
         """Test producer/consumer pattern."""
         messages = [f"message_{i}".encode() for i in range(10)]

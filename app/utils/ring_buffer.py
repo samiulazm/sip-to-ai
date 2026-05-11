@@ -174,12 +174,26 @@ class StreamBuffer:
         """
         return self._queue.get_nowait()
 
-    async def close(self) -> None:
-        """Close the buffer."""
-        self._closed = True
-        # Clear queue
+    def clear(self) -> int:
+        """Clear queued items without closing the buffer.
+
+        Returns:
+            Number of items cleared
+        """
+        count = 0
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
+                count += 1
             except asyncio.QueueEmpty:
                 break
+        return count
+
+    async def close(self) -> None:
+        """Close the buffer."""
+        self._closed = True
+        self.clear()
+        try:
+            self._queue.put_nowait(b"")
+        except asyncio.QueueFull:
+            pass

@@ -13,6 +13,7 @@ class AiEventType(Enum):
     DISCONNECTED = auto()
     ERROR = auto()
     SESSION_UPDATED = auto()
+    INTERRUPTION = auto()
 
     # Optional debug/logging events
     TRANSCRIPT_PARTIAL = auto()

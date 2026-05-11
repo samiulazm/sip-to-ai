@@ -138,6 +138,8 @@ class RTPAudioBridge:
                 # Get PCM16 audio from AudioAdapter downlink (AI → SIP)
                 # This blocks until data is available
                 pcm_data = await self.adapter.get_downlink_audio()
+                if not self._running or not pcm_data:
+                    break
 
                 # Send to RTP
                 await self.rtp.send_audio(pcm_data)

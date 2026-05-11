@@ -36,6 +36,7 @@ class AudioAdapter:
 
         # Accumulation buffer for downlink to avoid padding with zeros
         self._pending_bytes = b''
+        self._pending_lock = asyncio.Lock()
 
         # Stats
         self._frames_received = 0
@@ -121,30 +122,31 @@ class AudioAdapter:
             audio_chunk: Audio chunk from AI (PCM16 @ 8kHz, variable size from AI clients)
         """
         try:
-            # Append to pending buffer
-            self._pending_bytes += audio_chunk
+            async with self._pending_lock:
+                # Append to pending buffer
+                self._pending_bytes += audio_chunk
 
-            # Split into complete frames
-            offset = 0
-            frames_sent = 0
-            while offset + AudioConstants.PCM16_FRAME_SIZE <= len(self._pending_bytes):
-                frame = self._pending_bytes[offset:offset + AudioConstants.PCM16_FRAME_SIZE]
-                await self._downlink_stream.send(frame)
-                offset += AudioConstants.PCM16_FRAME_SIZE
-                frames_sent += 1
+                # Split into complete frames
+                offset = 0
+                frames_sent = 0
+                while offset + AudioConstants.PCM16_FRAME_SIZE <= len(self._pending_bytes):
+                    frame = self._pending_bytes[offset:offset + AudioConstants.PCM16_FRAME_SIZE]
+                    await self._downlink_stream.send(frame)
+                    offset += AudioConstants.PCM16_FRAME_SIZE
+                    frames_sent += 1
 
-            # Keep incomplete part for next call (no padding)
-            # This avoids inserting silence between chunks
-            self._pending_bytes = self._pending_bytes[offset:]
+                # Keep incomplete part for next call (no padding)
+                # This avoids inserting silence between chunks
+                self._pending_bytes = self._pending_bytes[offset:]
 
-            # Log frame processing
-            if frames_sent > 0:
-                self._logger.debug(
-                    f"AI audio processed",
-                    chunk_size=len(audio_chunk),
-                    frames_sent=frames_sent,
-                    pending=len(self._pending_bytes)
-                )
+                # Log frame processing
+                if frames_sent > 0:
+                    self._logger.debug(
+                        f"AI audio processed",
+                        chunk_size=len(audio_chunk),
+                        frames_sent=frames_sent,
+                        pending=len(self._pending_bytes)
+                    )
 
         except Exception as e:
             self._logger.error(f"Error feeding AI audio: {e}")
@@ -164,6 +166,26 @@ class AudioAdapter:
             PCM16 audio frame from AI (320 bytes @ 8kHz)
         """
         return await self._downlink_stream.receive()
+
+    async def clear_downlink_audio(self) -> int:
+        """Clear queued AI audio so caller barge-in stops playback quickly.
+
+        Returns:
+            Number of queued 20ms frames cleared
+        """
+        async with self._pending_lock:
+            cleared_frames = self._downlink_stream.clear()
+            pending_bytes = len(self._pending_bytes)
+            self._pending_bytes = b""
+
+        if cleared_frames or pending_bytes:
+            self._logger.info(
+                "Cleared downlink audio",
+                frames=cleared_frames,
+                pending_bytes=pending_bytes,
+            )
+
+        return cleared_frames
 
     def get_stats(self) -> dict:
         """Get bridge statistics.

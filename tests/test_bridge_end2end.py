@@ -85,6 +85,19 @@ class TestAudioAdapter:
 
         await adapter.close()
 
+    @pytest.mark.asyncio
+    async def test_clear_downlink_audio_discards_pending_playback(self) -> None:
+        """Barge-in should clear queued AI audio before it reaches RTP."""
+        adapter = AudioAdapter(uplink_capacity=10, downlink_capacity=10)
+
+        await adapter.feed_ai_audio(b"\x01" * 640)
+
+        cleared = await adapter.clear_downlink_audio()
+
+        assert cleared == 2
+        assert adapter.get_tx_pcm16_8k_nowait() == bytes([0] * 320)
+        await adapter.close()
+
 
 class TestCallSession:
     """Test complete call session functionality."""
