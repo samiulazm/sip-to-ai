@@ -216,6 +216,20 @@ class AsyncSIPServer:
 
         local_rtp_port = None
         try:
+            # UDP retransmits can repeat the same INVITE/Call-ID before ACK.
+            # Resend the existing 200 OK instead of creating duplicate RTP/AI sessions.
+            async with self._calls_lock:
+                existing_call = self.active_calls.get(call_id)
+
+            if existing_call:
+                logger.info(
+                    "Duplicate INVITE for existing call; resending 200 OK",
+                    call_id=call_id,
+                    from_addr=addr,
+                )
+                await existing_call.accept()
+                return
+
             # Allocate RTP port (thread-safe)
             local_rtp_port = await self.allocate_rtp_port()
 

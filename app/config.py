@@ -103,6 +103,7 @@ class AIConfig:
     openai_organization: str = ""
     openai_ws_endpoint: str = "wss://api.openai.com/v1/realtime"
     openai_model: str = "gpt-realtime"
+    openai_voice: str = "marin"
 
     # Deepgram Configuration
     deepgram_api_key: str = ""
@@ -170,6 +171,7 @@ class Config:
             openai_organization=os.getenv("OPENAI_ORGANIZATION", os.getenv("OPENAI_ORG_ID", "")),
             openai_ws_endpoint=os.getenv("OPENAI_WS_ENDPOINT", "wss://api.openai.com/v1/realtime"),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-realtime"),
+            openai_voice=os.getenv("OPENAI_VOICE", "marin"),
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", ""),
             deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),

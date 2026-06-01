@@ -76,7 +76,10 @@ def setup_logging() -> None:
     logger.info(f"Logging to file: {log_file}")
 
 
-def _load_agent_config(logger: structlog.BoundLogger) -> tuple[str, Optional[str]]:
+def _load_agent_config(
+    logger: structlog.BoundLogger,
+    prompt_file: Optional[str] = None
+) -> tuple[str, Optional[str]]:
     """Load agent configuration from YAML file.
 
     Args:
@@ -86,18 +89,19 @@ def _load_agent_config(logger: structlog.BoundLogger) -> tuple[str, Optional[str
         Tuple of (instructions, greeting)
     """
     # Default values if no config file
-    if not config.ai.agent_prompt_file:
+    agent_prompt_file = prompt_file or config.ai.agent_prompt_file
+    if not agent_prompt_file:
         return "You are a helpful assistant.", None
 
     # Resolve file path relative to project root if not absolute
-    yaml_path = Path(config.ai.agent_prompt_file)
+    yaml_path = Path(agent_prompt_file)
     if not yaml_path.is_absolute():
         project_root = Path(__file__).parent.parent
         yaml_path = project_root / yaml_path
 
     logger.info(
         "Loading agent prompts from YAML",
-        file_path=config.ai.agent_prompt_file,
+        file_path=agent_prompt_file,
         resolved_path=str(yaml_path),
         exists=yaml_path.exists()
     )
@@ -106,7 +110,7 @@ def _load_agent_config(logger: structlog.BoundLogger) -> tuple[str, Optional[str
     return agent_config.instructions, agent_config.greeting
 
 
-def create_ai_client() -> AiDuplexClient:
+def create_ai_client(prompt_file: Optional[str] = None) -> AiDuplexClient:
     """Create AI client based on configuration.
 
     Returns:
@@ -123,11 +127,12 @@ def create_ai_client() -> AiDuplexClient:
             raise ValueError("OpenAI API key not configured")
 
         # Load agent configuration (optional for OpenAI)
-        instructions, greeting = _load_agent_config(logger)
+        instructions, greeting = _load_agent_config(logger, prompt_file)
 
         logger.info(
             "Using OpenAI Realtime client",
             model=config.ai.openai_model,
+            voice=config.ai.openai_voice,
             endpoint=config.ai.openai_ws_endpoint,
             has_project=bool(config.ai.openai_project),
             has_organization=bool(config.ai.openai_organization),
@@ -139,6 +144,7 @@ def create_ai_client() -> AiDuplexClient:
         client = OpenAIRealtimeClient(
             api_key=config.ai.openai_api_key,
             model=config.ai.openai_model,
+            voice=config.ai.openai_voice,
             ws_endpoint=config.ai.openai_ws_endpoint,
             project=config.ai.openai_project,
             organization=config.ai.openai_organization,
@@ -153,14 +159,14 @@ def create_ai_client() -> AiDuplexClient:
             raise ValueError("Deepgram API key not configured")
 
         # FAIL-FIRST: YAML prompt file is REQUIRED for Deepgram
-        if not config.ai.agent_prompt_file:
+        if not (prompt_file or config.ai.agent_prompt_file):
             raise ValueError(
                 "Agent prompt file is required. "
                 "Set AGENT_PROMPT_FILE=agent_config.yaml"
             )
 
         # Load agent configuration (required for Deepgram)
-        instructions, greeting = _load_agent_config(logger)
+        instructions, greeting = _load_agent_config(logger, prompt_file)
 
         logger.info(
             "Using Deepgram Voice Agent client",
@@ -188,7 +194,7 @@ def create_ai_client() -> AiDuplexClient:
             raise ValueError("Gemini API key not configured")
 
         # Load agent configuration (optional for Gemini)
-        instructions, greeting = _load_agent_config(logger)
+        instructions, greeting = _load_agent_config(logger, prompt_file)
 
         logger.info(
             "Using Gemini Live client",
@@ -211,7 +217,7 @@ def create_ai_client() -> AiDuplexClient:
         if not config.ai.grok_api_key:
             raise ValueError("Grok API key not configured")
 
-        instructions, greeting = _load_agent_config(logger)
+        instructions, greeting = _load_agent_config(logger, prompt_file)
 
         logger.info(
             "Using Grok Voice client",
@@ -233,6 +239,18 @@ def create_ai_client() -> AiDuplexClient:
 
     else:
         raise ValueError(f"Unsupported AI vendor: {vendor}")
+
+
+def _sip_header_value(call: AsyncCall, header_name: str) -> Optional[str]:
+    """Return a SIP header value from the INVITE, case-insensitively."""
+    wanted = header_name.lower()
+    for key, value in call.invite.headers.items():
+        if key.lower() != wanted:
+            continue
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+    return None
 
 
 async def run_real_mode() -> None:
@@ -261,8 +279,11 @@ async def run_real_mode() -> None:
                 downlink_capacity=config.audio.downlink_buf_frames
             )
 
-            # Create AI client for this call
-            ai_client = create_ai_client()
+            # Create AI client for this call. Outbound campaign calls can pass
+            # a short prompt-file path via SIP header so each campaign can use
+            # its own system instructions without restarting the bridge.
+            prompt_file = _sip_header_value(call, "X-AI-Prompt-File")
+            ai_client = create_ai_client(prompt_file=prompt_file)
 
             # Create CallSession
             call_session = CallSession(
@@ -276,7 +297,8 @@ async def run_real_mode() -> None:
             logger.info(
                 "Call resources created",
                 call_id=call.call_id,
-                ai_vendor=config.ai.vendor
+                ai_vendor=config.ai.vendor,
+                prompt_file=prompt_file or config.ai.agent_prompt_file
             )
 
         except Exception as e:

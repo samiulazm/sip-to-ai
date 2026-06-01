@@ -231,7 +231,7 @@ class CallSession:
                     self._logger.info(
                         "Caller barge-in detected; cleared pending playback",
                         cleared_frames=cleared_frames,
-                        event=event.data,
+                        ai_event=event.data,
                     )
                 elif event.type == AiEventType.ERROR:
                     self._logger.warning("AI event error", error=event.error, data=event.data)

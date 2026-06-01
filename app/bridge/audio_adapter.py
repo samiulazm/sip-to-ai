@@ -165,7 +165,9 @@ class AudioAdapter:
         Returns:
             PCM16 audio frame from AI (320 bytes @ 8kHz)
         """
-        return await self._downlink_stream.receive()
+        frame = await self._downlink_stream.receive()
+        self._frames_sent += 1
+        return frame
 
     async def clear_downlink_audio(self) -> int:
         """Clear queued AI audio so caller barge-in stops playback quickly.
