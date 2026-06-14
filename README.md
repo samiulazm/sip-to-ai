@@ -15,7 +15,7 @@ This project:
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
 - ✅ **OpenAI Realtime API** (`gpt-realtime-2`)
 - ✅ **Deepgram Voice Agent**
-- ✅ **Gemini Live** (Gemini 2.5 Flash)
+- ✅ **Gemini Live** (`gemini-3.1-flash-live-preview`, Gemini 2.5 Flash)
 - ✅ **xAI Grok Voice** (grok-voice-think-fast-1.0)
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
@@ -178,6 +178,7 @@ sequenceDiagram
 - WebSocket: `wss://generativelanguage.googleapis.com/ws/...BidiGenerateContent`
 - Audio format: PCM16 (input @ 16kHz, output @ 24kHz)
 - Resampling: 8kHz SIP ↔ 16kHz/24kHz Gemini (handled internally)
+- Uplink uses `realtimeInput.audio` Blob (the deprecated `mediaChunks` field is rejected by newer models such as `gemini-3.1-flash-live-preview` with WebSocket close 1007)
 - Settings: model, voice, system instructions
 
 **`GrokVoiceClient`** (`app/ai/grok_voice.py`)
@@ -211,6 +212,42 @@ greeting: "Hello! How can I help you today?"
 
 Get your API key from [Deepgram Console](https://console.deepgram.com).
 
+### Use a 60db voice with the Deepgram brain (`SPEAK_PROVIDER=60db`)
+
+60db is **not** an end-to-end voice agent — it has no LLM, only speech I/O (STT, TTS, voices).
+So it cannot replace Deepgram. Instead it can be used as the **voice** of the Deepgram agent:
+Deepgram keeps doing STT + LLM (`gpt-4o-mini`) + VAD/turn-taking and emits the agent's reply
+as text (`ConversationText`); we synthesize that text with **60db TTS** (μ-law @ 8kHz) and feed
+it back to the caller. Deepgram is the brain, 60db is the mouth.
+
+```bash
+AI_VENDOR=deepgram
+DEEPGRAM_API_KEY=your-deepgram-key
+DEEPGRAM_LISTEN_MODEL=nova-2
+DEEPGRAM_LLM_MODEL=gpt-4o-mini
+AGENT_PROMPT_FILE=agent_prompt.yaml
+
+# Switch the voice to 60db
+SPEAK_PROVIDER=60db
+SIXTYDB_API_KEY=sk_live_your_60db_key
+SIXTYDB_VOICE_ID=fbb75ed2-975a-40c7-9e06-38e30524a9a1
+```
+
+List the voices on your 60db account to pick a `SIXTYDB_VOICE_ID`:
+
+```bash
+uv run python scripts/list_60db_voices.py
+```
+
+**How it works:** `60db TTS WebSocket` (`wss://api.60db.ai/ws/tts`) is configured for
+`MULAW` @ 8kHz, so its audio drops straight into the existing bridge with no resampling.
+`DEEPGRAM_SPEAK_MODEL` is ignored in this mode (Deepgram's own audio is discarded).
+
+**Trade-offs:** routing the reply text out to a second service adds some latency, and you lose
+Deepgram's native barge-in timing on the spoken audio (this mode is effectively half-duplex,
+matching the existing Deepgram barge-in suppression). Use it only when you specifically want a
+60db voice/clone. Get a 60db key from [60db](https://60db.ai).
+
 
 ## Gemini Live Setup
 
@@ -220,9 +257,11 @@ Set `AI_VENDOR=gemini` in `.env`:
 AI_VENDOR=gemini
 GEMINI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+GEMINI_MODEL=gemini-3.1-flash-live-preview
 GEMINI_VOICE=Puck
 ```
+
+Supported models (any Live API model works): `gemini-3.1-flash-live-preview` (default), `gemini-2.5-flash-native-audio-preview-12-2025`.
 
 Available voices: `Puck`, `Charon`, `Kore`, `Fenrir`, `Aoede`
 

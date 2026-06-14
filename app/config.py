@@ -108,12 +108,21 @@ class AIConfig:
     # Deepgram Configuration
     deepgram_api_key: str = ""
     deepgram_listen_model: str = "nova-2"  # STT model (nova-2, nova-3)
-    deepgram_speak_model: str = "aura-asteria-en"  # TTS voice
+    deepgram_speak_model: str = "aura-asteria-en"  # TTS voice (when speak_provider=deepgram)
     deepgram_llm_model: str = "gpt-4o-mini"  # LLM model for agent
+
+    # Speak provider: who renders the Deepgram agent's voice.
+    #   "deepgram" -> built-in Aura TTS (default)
+    #   "60db"     -> Deepgram stays the brain (STT+LLM+turn-taking), 60db is the voice
+    speak_provider: Literal["deepgram", "60db"] = "deepgram"
+
+    # 60db Voice (used when speak_provider=60db)
+    sixtydb_api_key: str = ""
+    sixtydb_voice_id: str = "fbb75ed2-975a-40c7-9e06-38e30524a9a1"  # 60db default voice
 
     # Gemini Live Configuration
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"  # Model with Live API support
+    gemini_model: str = "gemini-3.1-flash-live-preview"  # Model with Live API support
     gemini_voice: str = "Puck"  # Voice: Puck, Charon, Kore, Fenrir, Aoede
 
     # xAI Grok Voice Configuration
@@ -163,6 +172,14 @@ class Config:
         if ai_vendor not in ["mock", "openai", "deepgram", "gemini", "grok"]:
             ai_vendor = "mock"
 
+        # Fail fast on an unknown SPEAK_PROVIDER rather than silently using the
+        # Deepgram voice (which would mask a 60db misconfiguration).
+        speak_provider = os.getenv("SPEAK_PROVIDER", "deepgram").lower()
+        if speak_provider not in ("deepgram", "60db"):
+            raise ValueError(
+                f"SPEAK_PROVIDER must be 'deepgram' or '60db', got: {speak_provider!r}"
+            )
+
         self.ai = AIConfig(
             vendor=ai_vendor,  # type: ignore
             agent_prompt_file=os.getenv("AGENT_PROMPT_FILE", ""),
@@ -176,8 +193,13 @@ class Config:
             deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),
             deepgram_llm_model=os.getenv("DEEPGRAM_LLM_MODEL", "gpt-4o-mini"),
+            speak_provider=speak_provider,  # type: ignore
+            sixtydb_api_key=os.getenv("SIXTYDB_API_KEY", ""),
+            sixtydb_voice_id=os.getenv(
+                "SIXTYDB_VOICE_ID", "fbb75ed2-975a-40c7-9e06-38e30524a9a1"
+            ),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
             gemini_voice=os.getenv("GEMINI_VOICE", "Puck"),
             grok_api_key=os.getenv("XAI_API_KEY", ""),
             grok_ws_endpoint=os.getenv("GROK_WS_ENDPOINT", "wss://api.x.ai/v1/realtime"),
